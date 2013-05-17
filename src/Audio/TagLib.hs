@@ -2,12 +2,12 @@
 {-# LANGUAGE EmptyDataDecls #-}
 
 
-module Audio.TagLib.API
-  ( withMetadata
-  , Tag()
+module Audio.TagLib (
+    Tag()
   , AudioProperties()
   , TagLib (..)
   , TLEnv (..)
+  , withFiles  , withFile
   , getTitle   , setTitle  
   , getArtist  , setArtist 
   , getAlbum   , setAlbum  
@@ -22,9 +22,10 @@ module Audio.TagLib.API
   , io
   ) where
 
-import Control.Applicative
-import Control.Monad
-import Control.Monad.Trans.Reader
+import Control.Applicative (Applicative(..),(<$>),(<*>))
+import Control.Monad ((>=>),ap)
+import Control.Monad.Trans.Reader (ReaderT (..),asks)
+import Data.Maybe (listToMaybe)
 import Data.Word (Word8)
 import Foreign.C.String (CString,withCString)
 import Foreign.C.Types (CInt(..),CChar(..))
@@ -39,28 +40,59 @@ import qualified Data.Text.Encoding as T
 
 -- Base --------------------------------------------------------------------{{{1
 
--- | Process a computation requiring a (Ptr Tag) and (Ptr AudioProperties)
---   using a given file.
-withMetadata :: FilePath -> TagLib a -> IO (Maybe a)
-withMetadata path m =
-  withCString path                             $ \ c_path ->
-  E.bracket (c_taglib_file_new c_path) cleanup $ \ c_file ->
-    whenMaybe (c_file /= nullPtr) $ do
-      res <- c_taglib_file_is_valid c_file
-      whenMaybe (res /= 0) $ do
-        env <- TLEnv               <$>
-          c_taglib_file_tag c_file <*>
-          c_taglib_file_audioproperties c_file
-        Just <$> eval m env
-        
-  where
-  eval :: TagLib a -> TLEnv -> IO a
-  eval = runReaderT . runTagLib
-  cleanup c_file = do
-    c_taglib_file_save c_file
-    c_taglib_free_strings
-    c_taglib_file_free c_file
+-- | Process a computation requiring a @Ptr Tag@ and @Ptr AudioProperties@
+--   using a given file, producing one result for each @FilePath@ given.
+withFiles :: [FilePath] -> TagLib a -> IO (Maybe [a])
+withFiles paths m =
+  withCStrings paths $ \ c_paths ->
+    bracket c_paths  $ 
+      buildEnv >=> evalTagLib m 
 
+-- | Retrieve the @Tag@ and @AudioProperties@ pointers
+--   from a @TagLibFile@ pointer.
+buildEnv :: Ptr TagLibFile -> IO TLEnv
+buildEnv c_file = TLEnv    <$>
+  c_taglib_file_tag c_file <*>
+  c_taglib_file_audioproperties c_file
+
+-- | Process a computation for exactly one file, as per @withFiles@.
+withFile :: FilePath -> TagLib a -> IO (Maybe a)
+withFile path m = do
+  res <- withFiles [path] m
+  case res of
+    Just r -> return $ listToMaybe r
+    Nothing -> return Nothing
+
+-- | Save any changes made to file, and free all associated memory.
+cleanupFile :: Ptr TagLibFile -> IO ()
+cleanupFile c_file  = do
+  c_taglib_file_save c_file
+  c_taglib_free_strings
+  c_taglib_file_free c_file
+
+-- | For all @CString@s, each representing a @FilePath@, and a computation
+--   expecting a pointer to a file, run the computation on all files,
+--   if and only if all strings are valid files which are correctly opened
+--   by tag_c's @taglib_file_new@.
+bracket :: [CString] -> (Ptr TagLibFile -> IO a) -> IO (Maybe [a])
+bracket c_paths f = loop c_paths id
+  where
+  loop ps k = case ps of
+    []    -> fmap Just $ mapM f $ k []
+    p:ps' -> E.bracket (c_taglib_file_new p) cleanupFile $ \c_file ->
+      whenMaybe (c_file /= nullPtr) $ do
+        res <- c_taglib_file_is_valid c_file
+        whenMaybe (res /= 0) $ loop ps' (k . (c_file:))
+
+-- | Pluralized @withCString@.
+withCStrings :: [String] -> ([CString] -> IO a) -> IO a
+withCStrings ss f = loop ss id
+  where
+  loop l k = case l of
+    []   -> f $ k []
+    s:l' -> withCString s $ \c_str -> loop l' (k . (c_str:))
+
+-- | Simple helper. Continue with given computation upon a condition.
 whenMaybe :: (Monad m) => Bool -> m (Maybe a) -> m (Maybe a)
 whenMaybe b m = if b
   then m
@@ -115,23 +147,29 @@ instance Applicative TagLib where
   pure = return
   (<*>) = ap
 
+evalTagLib :: TagLib a -> TLEnv -> IO a
+evalTagLib = runReaderT . runTagLib
+
 -- | lift an @IO@ action into @TagLib@.
 io :: IO a -> TagLib a
 io = TagLib . ReaderT . const
 
--- | Retrieve the current @Tag@ pointer.
-getTagPtr :: TagLib TagP
-getTagPtr = TagLib $ asks tagPtr
-
--- | Retrieve the current @AudioProperties@ pointer.
-getAPPtr :: TagLib APP
-getAPPtr = TagLib $ asks apPtr
+rdr :: ReaderT TLEnv IO a -> TagLib a
+rdr = TagLib
 
 -- | Environment type for @TagLib@.
 data TLEnv = TLEnv
   { tagPtr :: Ptr Tag
   , apPtr  :: Ptr AudioProperties
   }
+
+-- | Retrieve the current @Tag@ pointer.
+getTagPtr :: TagLib TagP
+getTagPtr = rdr $ asks tagPtr
+
+-- | Retrieve the current @AudioProperties@ pointer.
+getAPPtr :: TagLib APP
+getAPPtr = rdr $ asks apPtr
 
 -- FFI Wrappers ------------------------------------------------------------{{{1
 
@@ -301,4 +339,6 @@ foreign import ccall "taglib_audioproperties_samplerate"
 
 foreign import ccall "taglib_audioproperties_channels"
   c_taglib_audioproperties_channels :: GetIntAP
+
+-- }}}
 
