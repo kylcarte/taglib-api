@@ -39,7 +39,8 @@ import qualified Data.Text.Encoding as T
 
 -- Base --------------------------------------------------------------------{{{1
 
--- | Process the Tag pointer for a file.
+-- | Process a computation requiring a (Ptr Tag) and (Ptr AudioProperties)
+--   using a given file.
 withMetadata :: FilePath -> TagLib a -> IO (Maybe a)
 withMetadata path m =
   withCString path                             $ \ c_path ->
@@ -68,36 +69,36 @@ whenMaybe b m = if b
 -- | Abstract Tag object.
 data Tag
 type TagP = Ptr Tag
-type SetString_Tag = CString -> TagP -> IO ()
-type SetInt_Tag = CInt -> TagP -> IO ()
-type GetString_Tag = TagP -> IO (Ptr Word8)
-type GetInt_Tag = TagP -> IO CInt
+type SetStringTag = CString -> TagP -> IO ()
+type SetIntTag = CInt -> TagP -> IO ()
+type GetStringTag = TagP -> IO (Ptr Word8)
+type GetIntTag = TagP -> IO CInt
 
 data AudioProperties
 type APP = Ptr AudioProperties
-type GetInt_AP = APP -> IO CInt
+type GetIntAP = APP -> IO CInt
+
+data TagLibFile
 
 -- Files -------------------------------------------------------------------{{{1
 
-data TagLib_File
-
 foreign import ccall "taglib_file_new"
-  c_taglib_file_new :: CString -> IO (Ptr TagLib_File)
+  c_taglib_file_new :: CString -> IO (Ptr TagLibFile)
 
 foreign import ccall "taglib_file_free"
-  c_taglib_file_free :: Ptr TagLib_File -> IO ()
+  c_taglib_file_free :: Ptr TagLibFile -> IO ()
 
 foreign import ccall "taglib_file_save"
-  c_taglib_file_save :: Ptr TagLib_File -> IO ()
+  c_taglib_file_save :: Ptr TagLibFile -> IO ()
 
 foreign import ccall "taglib_file_is_valid"
-  c_taglib_file_is_valid :: Ptr TagLib_File -> IO CInt
+  c_taglib_file_is_valid :: Ptr TagLibFile -> IO CInt
 
 foreign import ccall "taglib_file_tag"
-  c_taglib_file_tag :: Ptr TagLib_File -> IO (TagP)
+  c_taglib_file_tag :: Ptr TagLibFile -> IO TagP
 
 foreign import ccall "taglib_file_audioproperties"
-  c_taglib_file_audioproperties :: Ptr TagLib_File -> IO (APP)
+  c_taglib_file_audioproperties :: Ptr TagLibFile -> IO APP
 
 foreign import ccall "taglib_tag_free_strings"
   c_taglib_free_strings :: IO ()
@@ -114,15 +115,19 @@ instance Applicative TagLib where
   pure = return
   (<*>) = ap
 
+-- | lift an @IO@ action into @TagLib@.
 io :: IO a -> TagLib a
 io = TagLib . ReaderT . const
 
+-- | Retrieve the current @Tag@ pointer.
 getTagPtr :: TagLib TagP
 getTagPtr = TagLib $ asks tagPtr
 
+-- | Retrieve the current @AudioProperties@ pointer.
 getAPPtr :: TagLib APP
 getAPPtr = TagLib $ asks apPtr
 
+-- | Environment type for @TagLib@.
 data TLEnv = TLEnv
   { tagPtr :: Ptr Tag
   , apPtr  :: Ptr AudioProperties
@@ -130,153 +135,170 @@ data TLEnv = TLEnv
 
 -- FFI Wrappers ------------------------------------------------------------{{{1
 
-packString_Tag :: SetString_Tag -> T.Text -> TagLib ()
-packString_Tag k txt = do
+-- | Given a @IO@ action which expects a @Tag@ pointer and @CString@,
+--   lifts it into an @TagLib@ action, expecting @Text@.
+packStringTag :: SetStringTag -> T.Text -> TagLib ()
+packStringTag k txt = do
   c_tag <- getTagPtr
   io $ SI.useAsCString bs $ flip k c_tag
   where
   bs = T.encodeUtf8 txt
 
-packInt_Tag :: SetInt_Tag -> Int -> TagLib ()
-packInt_Tag k int = do
+-- | Given a @IO@ action which expects a @Tag@ pointer and @CInt@,
+--   lifts it into an @TagLib@ action, expecting a @Int@.
+packIntTag :: SetIntTag -> Int -> TagLib ()
+packIntTag k int = do
   c_tag <- getTagPtr
   io $ k (toEnum int) c_tag
 
-unpackString_Tag :: GetString_Tag -> TagLib T.Text
-unpackString_Tag k = do
+-- | Given a @IO@ action which expects a @Tag@ pointer and
+--   results in a @CString@, lifts it into a @TagLib@ action,
+--   resulting in @Text@.
+unpackStringTag :: GetStringTag -> TagLib T.Text
+unpackStringTag k = do
   c_tag <- getTagPtr
   io $ do
     c_str <- k c_tag
     len   <- lengthArray0 0 c_str
     T.decodeUtf8 <$> SI.create len (\ dst -> copyArray dst c_str len)
 
-unpackInt_Tag :: GetInt_Tag -> TagLib Int
-unpackInt_Tag k = do
+-- | Given a @IO@ action which expects a @Tag@ pointer and
+--   results in a @CInt@, lifts it into a @TagLib@ action,
+--   resulting in @Int@.
+unpackIntTag :: GetIntTag -> TagLib Int
+unpackIntTag k = do
   c_tag <- getTagPtr
   io $ fromIntegral <$> k c_tag
 
-unpackInt_AP :: GetInt_AP -> TagLib Int
-unpackInt_AP k = do
+-- | Given a @IO@ action which expects a @AudioProperties@ pointer and
+--   results in a @CInt@, lifts it into a @TagLib@ action,
+--   resulting in @Int@.
+unpackIntAP :: GetIntAP -> TagLib Int
+unpackIntAP k = do
   c_ap <- getAPPtr
   io $ fromIntegral <$> k c_ap
 
 -- Tag Setters -------------------------------------------------------------{{{1
 
 setTitle :: T.Text -> TagLib ()
-setTitle = packString_Tag c_taglib_tag_set_title
+setTitle = packStringTag c_taglib_tag_set_title
 
 setArtist :: T.Text -> TagLib ()
-setArtist = packString_Tag c_taglib_tag_set_artist
+setArtist = packStringTag c_taglib_tag_set_artist
 
 setAlbum :: T.Text -> TagLib ()
-setAlbum = packString_Tag c_taglib_tag_set_album
+setAlbum = packStringTag c_taglib_tag_set_album
 
 setComment :: T.Text -> TagLib ()
-setComment = packString_Tag c_taglib_tag_set_comment
+setComment = packStringTag c_taglib_tag_set_comment
 
 setGenre :: T.Text -> TagLib ()
-setGenre = packString_Tag c_taglib_tag_set_genre
+setGenre = packStringTag c_taglib_tag_set_genre
 
 setYear :: Int -> TagLib ()
-setYear = packInt_Tag c_taglib_tag_set_year
+setYear = packIntTag c_taglib_tag_set_year
 
 setTrack :: Int -> TagLib ()
-setTrack = packInt_Tag c_taglib_tag_set_track
+setTrack = packIntTag c_taglib_tag_set_track
 
 
 
 foreign import ccall "taglib_tag_set_title"
-  c_taglib_tag_set_title :: SetString_Tag
+  c_taglib_tag_set_title :: SetStringTag
 
 foreign import ccall "taglib_tag_set_artist"
-  c_taglib_tag_set_artist :: SetString_Tag
+  c_taglib_tag_set_artist :: SetStringTag
 
 foreign import ccall "taglib_tag_set_album"
-  c_taglib_tag_set_album :: SetString_Tag
+  c_taglib_tag_set_album :: SetStringTag
 
 foreign import ccall "taglib_tag_set_comment"
-  c_taglib_tag_set_comment :: SetString_Tag
+  c_taglib_tag_set_comment :: SetStringTag
 
 foreign import ccall "taglib_tag_set_genre"
-  c_taglib_tag_set_genre :: SetString_Tag
+  c_taglib_tag_set_genre :: SetStringTag
 
 foreign import ccall "taglib_tag_set_year"
-  c_taglib_tag_set_year :: SetInt_Tag
+  c_taglib_tag_set_year :: SetIntTag
 
 foreign import ccall "taglib_tag_set_track"
-  c_taglib_tag_set_track :: SetInt_Tag
+  c_taglib_tag_set_track :: SetIntTag
 
 -- Tag Getters -------------------------------------------------------------{{{1
 
 getTitle :: TagLib T.Text
-getTitle  = unpackString_Tag c_taglib_tag_title
+getTitle  = unpackStringTag c_taglib_tag_title
 
 getArtist :: TagLib T.Text
-getArtist  = unpackString_Tag c_taglib_tag_artist
+getArtist  = unpackStringTag c_taglib_tag_artist
 
 getAlbum :: TagLib T.Text
-getAlbum  = unpackString_Tag c_taglib_tag_album
+getAlbum  = unpackStringTag c_taglib_tag_album
 
 getComment :: TagLib T.Text
-getComment  = unpackString_Tag c_taglib_tag_comment
+getComment  = unpackStringTag c_taglib_tag_comment
 
 getGenre :: TagLib T.Text
-getGenre  = unpackString_Tag c_taglib_tag_genre
+getGenre  = unpackStringTag c_taglib_tag_genre
 
 getYear :: TagLib Int
-getYear  = unpackInt_Tag c_taglib_tag_year
+getYear  = unpackIntTag c_taglib_tag_year
 
 getTrack :: TagLib Int
-getTrack  = unpackInt_Tag c_taglib_tag_track
+getTrack  = unpackIntTag c_taglib_tag_track
 
 
 
 foreign import ccall "taglib_tag_title"
-  c_taglib_tag_title :: GetString_Tag
+  c_taglib_tag_title :: GetStringTag
 
 foreign import ccall "taglib_tag_artist"
-  c_taglib_tag_artist :: GetString_Tag
+  c_taglib_tag_artist :: GetStringTag
 
 foreign import ccall "taglib_tag_album"
-  c_taglib_tag_album :: GetString_Tag
+  c_taglib_tag_album :: GetStringTag
 
 foreign import ccall "taglib_tag_comment"
-  c_taglib_tag_comment :: GetString_Tag
+  c_taglib_tag_comment :: GetStringTag
 
 foreign import ccall "taglib_tag_genre"
-  c_taglib_tag_genre :: GetString_Tag
+  c_taglib_tag_genre :: GetStringTag
 
 foreign import ccall "taglib_tag_year"
-  c_taglib_tag_year :: GetInt_Tag
+  c_taglib_tag_year :: GetIntTag
 
 foreign import ccall "taglib_tag_track"
-  c_taglib_tag_track :: GetInt_Tag
+  c_taglib_tag_track :: GetIntTag
 
 -- AudioProperties Getters -------------------------------------------------{{{1
 
+-- | Retrieves the duration of the given file, in seconds.
 getLength :: TagLib Int
-getLength = unpackInt_AP c_taglib_audioproperties_length
+getLength = unpackIntAP c_taglib_audioproperties_length
 
+-- | Retrieves the bitrate of the given file, in kb/s.
 getBitrate :: TagLib Int
-getBitrate = unpackInt_AP c_taglib_audioproperties_bitrate
+getBitrate = unpackIntAP c_taglib_audioproperties_bitrate
 
+-- | Retrieves the sample rate of the given file, in Hz.
 getSampleRate :: TagLib Int
-getSampleRate = unpackInt_AP c_taglib_audioproperties_samplerate
+getSampleRate = unpackIntAP c_taglib_audioproperties_samplerate
 
+-- | Retrieves the number of channels in the given file.
 getChannels :: TagLib Int
-getChannels = unpackInt_AP c_taglib_audioproperties_channels
+getChannels = unpackIntAP c_taglib_audioproperties_channels
 
 
 
 foreign import ccall "taglib_audioproperties_length"
-  c_taglib_audioproperties_length :: GetInt_AP
+  c_taglib_audioproperties_length :: GetIntAP
 
 foreign import ccall "taglib_audioproperties_bitrate"
-  c_taglib_audioproperties_bitrate :: GetInt_AP
+  c_taglib_audioproperties_bitrate :: GetIntAP
 
 foreign import ccall "taglib_audioproperties_samplerate"
-  c_taglib_audioproperties_samplerate :: GetInt_AP
+  c_taglib_audioproperties_samplerate :: GetIntAP
 
 foreign import ccall "taglib_audioproperties_channels"
-  c_taglib_audioproperties_channels :: GetInt_AP
+  c_taglib_audioproperties_channels :: GetIntAP
 
