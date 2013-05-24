@@ -1,4 +1,4 @@
 taglib-api
 ==========
 
-A convenient layer over TagLib's C bindings
+An FFI layer over TagLib's C bindings.
