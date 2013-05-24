@@ -7,6 +7,7 @@ module Audio.TagLib
   , io
   , openFile
   , TagLib (..)
+  , FileId ()
   , getTitle   , setTitle  
   , getArtist  , setArtist 
   , getAlbum   , setAlbum  
