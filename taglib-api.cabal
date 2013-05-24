@@ -1,7 +1,7 @@
 
 name:                taglib-api
-version:             0.1.0.0
-synopsis:            A convenient layer over TagLib's C bindings
+version:             0.1.1.0
+synopsis:            An FFI layer over TagLib's C bindings
 license:             BSD3
 license-file:        LICENSE
 author:              Kyle Carter
@@ -12,7 +12,7 @@ build-type:          Simple
 cabal-version:       >=1.10
 extra-source-files:  README.md
                      LICENSE
--- description:         
+description:         
 
 flag UsePkgConfig
   Description: Use pkg-config to check for library dependencies.

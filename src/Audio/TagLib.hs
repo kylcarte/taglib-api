@@ -1,12 +1,11 @@
 {-# LANGUAGE ForeignFunctionInterface #-}
-{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE EmptyDataDecls #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE DeriveDataTypeable #-}
 
 module Audio.TagLib
   ( taglib
+  , io
   , openFile
   , TagLib (..)
   , getTitle   , setTitle  
@@ -22,19 +21,15 @@ module Audio.TagLib
   , getChannels
   ) where
 
-import Control.Monad.IO.Class
 import Control.Monad.State
 
 import Control.Applicative
-import qualified Control.Exception as E
-import qualified Data.Map as M
-import qualified Data.Text as T
-import Data.Typeable
-import Data.Word (Word8)
+import Data.Typeable (Typeable())
 import Foreign.C.String (CString,withCString,peekCString)
 import Foreign.C.Types (CInt(..),CChar(..))
 import Foreign.Ptr (Ptr,nullPtr)
-import Foreign.Marshal.Array (lengthArray0,copyArray)
+import qualified Control.Exception as E
+import qualified Data.Map as M
 import qualified Data.ByteString as BS
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
@@ -44,7 +39,7 @@ import qualified Data.Text.Encoding as T
 -- | Monad for performing TagLib operations
 newtype TagLib a = TagLib
   { unTagLib :: StateT TagLibEnv IO a
-  } deriving (Functor, Monad, Applicative, MonadIO, MonadState TagLibEnv)
+  } deriving (Functor, Monad, Applicative)
 
 -- | Internal representation of an open file
 data TagLibFile = TagLibFile
@@ -127,7 +122,7 @@ taglib m = do
 
 openFile :: FilePath -> TagLib FileId
 openFile fp = do
-  f <- liftIO $ withCString fp $ \c_path -> do
+  f <- io $ withCString fp $ \c_path -> do
     c_file <- c_taglib_file_new c_path
     if (c_file == nullPtr)
     then E.throw (UnableToOpen fp) 
@@ -142,19 +137,22 @@ openFile fp = do
   addNewFile i f
   return i
 
+io :: IO a -> TagLib a
+io m = TagLib $ StateT $ \e -> (,) <$> m <*> pure e
+
 -- }}}
 
 -- Monadic Operations {{{
 
 -- | Put a new file into the Env
 addNewFile :: FileId -> TagLibFile -> TagLib ()
-addNewFile i f = modify $ onFilesOpen $ M.insert i f
+addNewFile i f = TagLib $ modify $ onFilesOpen $ M.insert i f
 
 -- | Get a fresh FileId, maintaining the internal generator
 nextId :: TagLib FileId
 nextId = do
   i <- fromEnv taglibNextId
-  modify $ onNextId (+1)
+  TagLib $ modify $ onNextId (+1)
   return $ FileId i
 
 -- | Get the list of currently opened files.
@@ -173,7 +171,7 @@ fromFile acc fid = do
   mf <- M.lookup fid <$> fromEnv taglibFilesOpen
   case mf of
     Just f -> return (acc f)
-    Nothing -> liftIO $ E.throw NoSuchFileId
+    Nothing -> io $ E.throw NoSuchFileId
 
 -- }}}
 
@@ -184,7 +182,7 @@ fromFile acc fid = do
 packStringTag :: SetStringTag -> FileId -> T.Text -> TagLib ()
 packStringTag k fid txt = do
   c_tag <- fromFile tagPtr fid
-  liftIO $ BS.useAsCString bs $ k c_tag
+  io $ BS.useAsCString bs $ k c_tag
   where
   bs :: BS.ByteString
   bs = T.encodeUtf8 txt
@@ -194,7 +192,7 @@ packStringTag k fid txt = do
 packIntTag :: SetIntTag -> FileId -> Int -> TagLib ()
 packIntTag k fid int = do
   c_tag <- fromFile tagPtr fid
-  liftIO $ k c_tag $ toEnum int
+  io $ k c_tag $ toEnum int
 
 -- | Given a @IO@ action which expects a @Tag@ pointer and
 --   results in a @CString@, lifts it into a @TagLib@ action,
@@ -202,7 +200,7 @@ packIntTag k fid int = do
 unpackStringTag :: GetStringTag -> FileId -> TagLib T.Text
 unpackStringTag k fid = do
   c_tag <- fromFile tagPtr fid
-  liftIO $ do
+  io $ do
     c_str <- k c_tag
     T.pack <$> peekCString c_str
 
@@ -212,7 +210,7 @@ unpackStringTag k fid = do
 unpackIntTag :: GetIntTag -> FileId -> TagLib Int
 unpackIntTag k fid = do
   c_tag <- fromFile tagPtr fid
-  liftIO $ fromIntegral <$> k c_tag
+  io $ fromIntegral <$> k c_tag
 
 -- | Given a @IO@ action which expects a @AudioProperties@ pointer and
 --   results in a @CInt@, lifts it into a @TagLib@ action,
@@ -220,7 +218,7 @@ unpackIntTag k fid = do
 unpackIntAP :: GetIntAP -> FileId -> TagLib Int
 unpackIntAP k fid = do
   c_ap <- fromFile audioPropPtr fid
-  liftIO $ fromIntegral <$> k c_ap
+  io $ fromIntegral <$> k c_ap
 
 -- }}}
 
