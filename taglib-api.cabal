@@ -12,7 +12,18 @@ build-type:          Simple
 cabal-version:       >=1.10
 extra-source-files:  README.md
                      LICENSE
-description:         
+
+description:         Provides functions for reading and
+                     writing metadata for a variety of common
+                     audio formats. Currently supports both
+                     ID3v1 and ID3v2 for MP3 files, Ogg
+                     Vorbis comments and ID3 tags and Vorbis
+                     comments in FLAC, MPC, Speex, WavPack
+                     TrueAudio, WAV, AIFF, MP4 and ASF files.
+                     It also handles management of taglib
+                     files and strings, automatically freeing
+                     allocations when computation is
+                     finished.
 
 flag UsePkgConfig
   Description: Use pkg-config to check for library dependencies.

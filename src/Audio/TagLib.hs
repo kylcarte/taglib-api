@@ -1,5 +1,4 @@
 {-# LANGUAGE ForeignFunctionInterface #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE EmptyDataDecls #-}
 {-# LANGUAGE DeriveDataTypeable #-}
 
@@ -37,9 +36,18 @@ import qualified Data.Text.Encoding as T
 -- Types {{{
 
 -- | Monad for performing TagLib operations
-newtype TagLib a = TagLib
-  { unTagLib :: StateT TagLibEnv IO a
-  } deriving (Functor, Monad, Applicative)
+newtype TagLib a = TagLib { unTagLib :: StateT TagLibEnv IO a }
+
+instance Functor TagLib where
+  fmap f (TagLib m) = TagLib $ fmap f m
+
+instance Monad TagLib where
+  return           = TagLib . return
+  (TagLib m) >>= f = TagLib $ m >>= unTagLib . f
+
+instance Applicative TagLib where
+  pure  = return
+  (<*>) = ap
 
 -- | Internal representation of an open file
 data TagLibFile = TagLibFile
@@ -59,7 +67,6 @@ data AudioProperties
 -- | FFI Type Synonyms
 type SetStringTag = Ptr Tag -> CString -> IO ()
 type SetIntTag = Ptr Tag -> CInt -> IO ()
-
 type GetStringTag = Ptr Tag -> IO (Ptr CChar)
 type GetIntTag = Ptr Tag -> IO CInt
 type GetIntAP = Ptr AudioProperties -> IO CInt
@@ -92,6 +99,7 @@ onNextId f e = e { taglibNextId = f $ taglibNextId e }
 
 -- Exceptions {{{
 
+-- | Exceptions that might be thrown
 data TagLibException
   = NoSuchFileId
   | InvalidFile FilePath
@@ -104,6 +112,9 @@ instance E.Exception TagLibException
 
 -- Main Interface {{{
 
+-- | Run a @TagLib@ block. Save and free any files
+--   left open when the block is finished, and free
+--   all strings produced by taglib.
 taglib :: TagLib a -> IO a
 taglib m = do
   (res,fs) <- eval m'
@@ -120,6 +131,9 @@ taglib m = do
     c_taglib_file_save f
     c_taglib_file_free f
 
+-- | Open a file and return a corresponding @FileId@.
+--   Internally, this grabs the Tag and AudioProperties
+--   pointers to the TagLib_File.
 openFile :: FilePath -> TagLib FileId
 openFile fp = do
   f <- io $ withCString fp $ \c_path -> do
@@ -137,6 +151,7 @@ openFile fp = do
   addNewFile i f
   return i
 
+-- | Embed an IO action in the TagLib context.
 io :: IO a -> TagLib a
 io m = TagLib $ StateT $ \e -> (,) <$> m <*> pure e
 
@@ -249,24 +264,31 @@ foreign import ccall "taglib_tag_free_strings"
 
 -- Tag Setters {{{
 
+-- | Set the track title.
 setTitle :: FileId ->  T.Text -> TagLib ()
 setTitle = packStringTag c_taglib_tag_set_title
 
+-- | Set the artist name.
 setArtist :: FileId ->  T.Text -> TagLib ()
 setArtist = packStringTag c_taglib_tag_set_artist
 
+-- | Set the album name.
 setAlbum :: FileId ->  T.Text -> TagLib ()
 setAlbum = packStringTag c_taglib_tag_set_album
 
+-- | Set the comment field.
 setComment :: FileId ->  T.Text -> TagLib ()
 setComment = packStringTag c_taglib_tag_set_comment
 
+-- | Set the genre field.
 setGenre :: FileId ->  T.Text -> TagLib ()
 setGenre = packStringTag c_taglib_tag_set_genre
 
+-- | Set the release year.
 setYear :: FileId ->  Int -> TagLib ()
 setYear = packIntTag c_taglib_tag_set_year
 
+-- | Set the track number.
 setTrack :: FileId ->  Int -> TagLib ()
 setTrack = packIntTag c_taglib_tag_set_track
 
@@ -296,24 +318,31 @@ foreign import ccall "taglib_tag_set_track"
 
 -- Tag Getters {{{
 
+-- | Get the track title.
 getTitle :: FileId -> TagLib T.Text
 getTitle  = unpackStringTag c_taglib_tag_title
 
+-- | Get the artist name.
 getArtist :: FileId -> TagLib T.Text
 getArtist  = unpackStringTag c_taglib_tag_artist
 
+-- | Get the album name.
 getAlbum :: FileId -> TagLib T.Text
 getAlbum  = unpackStringTag c_taglib_tag_album
 
+-- | Get the contents of the comment field.
 getComment :: FileId -> TagLib T.Text
 getComment  = unpackStringTag c_taglib_tag_comment
 
+-- | Get the contents of the genre field.
 getGenre :: FileId -> TagLib T.Text
 getGenre  = unpackStringTag c_taglib_tag_genre
 
+-- | Get the release year.
 getYear :: FileId -> TagLib Int
 getYear  = unpackIntTag c_taglib_tag_year
 
+-- | Get the track number.
 getTrack :: FileId -> TagLib Int
 getTrack  = unpackIntTag c_taglib_tag_track
 
