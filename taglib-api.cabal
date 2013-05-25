@@ -1,6 +1,6 @@
 
 name:                taglib-api
-version:             0.1.1.1
+version:             0.1.1.2
 synopsis:            An FFI layer over TagLib's C bindings
 license:             BSD3
 license-file:        LICENSE
