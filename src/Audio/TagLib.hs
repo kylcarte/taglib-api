@@ -4,6 +4,7 @@
 module Audio.TagLib
   ( module Audio.TagLib
   , TagLib (..)
+  , FileId ()
   , io
   ) where
 
