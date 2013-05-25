@@ -1,115 +1,22 @@
 {-# LANGUAGE ForeignFunctionInterface #-}
 {-# LANGUAGE EmptyDataDecls #-}
-{-# LANGUAGE DeriveDataTypeable #-}
 
 module Audio.TagLib
-  ( taglib
-  , io
-  , openFile
+  ( module Audio.TagLib
   , TagLib (..)
-  , FileId ()
-  , getTitle   , setTitle  
-  , getArtist  , setArtist 
-  , getAlbum   , setAlbum  
-  , getComment , setComment
-  , getGenre   , setGenre  
-  , getYear    , setYear   
-  , getTrack   , setTrack  
-  , getLength
-  , getBitrate
-  , getSampleRate
-  , getChannels
+  , io
   ) where
 
-import Control.Monad.State
-
 import Control.Applicative
-import Data.Typeable (Typeable())
 import Foreign.C.String (CString,withCString,peekCString)
 import Foreign.C.Types (CInt(..),CChar(..))
 import Foreign.Ptr (Ptr,nullPtr)
 import qualified Control.Exception as E
-import qualified Data.Map as M
 import qualified Data.ByteString as BS
-import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
+import qualified Data.Text as T
 
--- Types {{{
-
--- | Monad for performing TagLib operations
-newtype TagLib a = TagLib { unTagLib :: StateT TagLibEnv IO a }
-
-instance Functor TagLib where
-  fmap f (TagLib m) = TagLib $ fmap f m
-
-instance Monad TagLib where
-  return           = TagLib . return
-  (TagLib m) >>= f = TagLib $ m >>= unTagLib . f
-
-instance Applicative TagLib where
-  pure  = return
-  (<*>) = ap
-
--- | Internal representation of an open file
-data TagLibFile = TagLibFile
-  { filePtr      :: Ptr File
-  , tagPtr       :: Ptr Tag
-  , audioPropPtr :: Ptr AudioProperties
-  }
-
--- | A handle for an open file
-newtype FileId = FileId Integer deriving (Eq,Ord)
-
--- | Abstract C Types
-data File
-data Tag
-data AudioProperties
-
--- | FFI Type Synonyms
-type SetStringTag = Ptr Tag -> CString -> IO ()
-type SetIntTag = Ptr Tag -> CInt -> IO ()
-type GetStringTag = Ptr Tag -> IO (Ptr CChar)
-type GetIntTag = Ptr Tag -> IO CInt
-type GetIntAP = Ptr AudioProperties -> IO CInt
-
--- }}}
-
--- Env {{{
-
--- | A collection of open files, and a generator for unique file ID's
-data TagLibEnv = TagLibEnv
-  { taglibFilesOpen :: M.Map FileId TagLibFile
-  , taglibNextId    :: Integer
-  }
-
--- | A fresh Env
-initialEnv :: TagLibEnv
-initialEnv = TagLibEnv M.empty 0
-
--- | Record modify for taglibFilesOpen
-onFilesOpen :: (M.Map FileId TagLibFile -> M.Map FileId TagLibFile)
-  -> TagLibEnv -> TagLibEnv
-onFilesOpen f e = e { taglibFilesOpen = f $ taglibFilesOpen e }
-
--- | Record modify for taglibNextId
-onNextId :: (Integer -> Integer)
-  -> TagLibEnv -> TagLibEnv
-onNextId f e = e { taglibNextId = f $ taglibNextId e }
-
--- }}}
-
--- Exceptions {{{
-
--- | Exceptions that might be thrown
-data TagLibException
-  = NoSuchFileId
-  | InvalidFile FilePath
-  | UnableToOpen FilePath
-  deriving (Show, Typeable)
-
-instance E.Exception TagLibException
-
--- }}}
+import Audio.TagLib.Internal
 
 -- Main Interface {{{
 
@@ -118,19 +25,15 @@ instance E.Exception TagLibException
 --   all strings produced by taglib.
 taglib :: TagLib a -> IO a
 taglib m = do
-  (res,fs) <- eval m'
-  mapM_ cleanup fs
+  (res,fs) <- evalTagLib initialEnv m'
+  mapM_ cleanupFile fs
   c_taglib_free_strings
   return res
   where
-  eval = flip evalStateT initialEnv . unTagLib
   m' = do
     res <- m 
     fs <- openFilePtrs
     return (res,fs)
-  cleanup f = do
-    c_taglib_file_save f
-    c_taglib_file_free f
 
 -- | Open a file and return a corresponding @FileId@.
 --   Internally, this grabs the Tag and AudioProperties
@@ -145,49 +48,12 @@ openFile fp = do
       res <- c_taglib_file_is_valid c_file
       if (res == 0)
       then E.throw (InvalidFile fp)
-      else TagLibFile c_file <$>
+      else TagLibFile c_file        <$>
            c_taglib_file_tag c_file <*>
            c_taglib_file_audioproperties c_file
-  i <- nextId
-  addNewFile i f
-  return i
-
--- | Embed an IO action in the TagLib context.
-io :: IO a -> TagLib a
-io m = TagLib $ StateT $ \e -> (,) <$> m <*> pure e
-
--- }}}
-
--- Monadic Operations {{{
-
--- | Put a new file into the Env
-addNewFile :: FileId -> TagLibFile -> TagLib ()
-addNewFile i f = TagLib $ modify $ onFilesOpen $ M.insert i f
-
--- | Get a fresh FileId, maintaining the internal generator
-nextId :: TagLib FileId
-nextId = do
-  i <- fromEnv taglibNextId
-  TagLib $ modify $ onNextId (+1)
-  return $ FileId i
-
--- | Get the list of currently opened files.
-openFilePtrs :: TagLib [Ptr File]
-openFilePtrs = fromEnv $ map filePtr . M.elems . taglibFilesOpen
-
--- | Call a function requiring the Env
-fromEnv :: (TagLibEnv -> a) -> TagLib a
-fromEnv f = TagLib $ gets f
-
--- | Call a function requiring a file.
---   Throws an exception should the FileId not point
---   to a currently open file.
-fromFile :: (TagLibFile -> a) -> FileId -> TagLib a
-fromFile acc fid = do
-  mf <- M.lookup fid <$> fromEnv taglibFilesOpen
-  case mf of
-    Just f -> return (acc f)
-    Nothing -> io $ E.throw NoSuchFileId
+  fid <- nextId
+  addNewFile fid f
+  return fid
 
 -- }}}
 
@@ -238,28 +104,14 @@ unpackIntAP k fid = do
 
 -- }}}
 
--- File FFI {{{
+-- FFI Types {{{
 
-foreign import ccall "taglib_file_new"
-  c_taglib_file_new :: CString -> IO (Ptr File)
-
-foreign import ccall "taglib_file_free"
-  c_taglib_file_free :: Ptr File -> IO ()
-
-foreign import ccall "taglib_file_save"
-  c_taglib_file_save :: Ptr File -> IO ()
-
-foreign import ccall "taglib_file_is_valid"
-  c_taglib_file_is_valid :: Ptr File -> IO CInt
-
-foreign import ccall "taglib_file_tag"
-  c_taglib_file_tag :: Ptr File -> IO (Ptr Tag)
-
-foreign import ccall "taglib_file_audioproperties"
-  c_taglib_file_audioproperties :: Ptr File -> IO (Ptr AudioProperties)
-
-foreign import ccall "taglib_tag_free_strings"
-  c_taglib_free_strings :: IO ()
+-- | FFI Type Synonyms
+type SetStringTag = Ptr Tag -> CString -> IO ()
+type SetIntTag = Ptr Tag -> CInt -> IO ()
+type GetStringTag = Ptr Tag -> IO (Ptr CChar)
+type GetIntTag = Ptr Tag -> IO CInt
+type GetIntAP = Ptr AudioProperties -> IO CInt
 
 -- }}}
 
